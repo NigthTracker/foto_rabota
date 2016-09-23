@@ -5,8 +5,8 @@ $ () ->
     window.Backbone.Radio = require('backbone.radio')
     window.Marionette = require('backbone.marionette')
     bootstrap = require('bootstrap')
-    Application = require('./coffee/aplication.coffee')
-
-
+    Application = require('./coffee/aplication')
+    
+    new Application()
 
 

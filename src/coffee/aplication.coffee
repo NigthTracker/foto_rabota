@@ -1,3 +1,7 @@
+AppRouter = require('./routers/appRouter')
+AppController = require('./controller/appController')
+MainLayout = require('./layout/main')
+
 class Application extends Marionette.Application
     initialize: (options)->
         @on 'before:start', @startHistory
@@ -6,7 +10,7 @@ class Application extends Marionette.Application
         @appController = new AppController mainRegion: @layout.content
         @router = new AppRouter controller: @appController
         @start()
-    
+
     startHistory: ()->
         Backbone.history.start()
 
