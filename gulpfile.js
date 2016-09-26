@@ -43,10 +43,12 @@ gulp.task('browserify', function() {
         .pipe(browserSync.stream({once: true}));
 });
 
-gulp.task('watch',['browserify','browserSync','lessToCss'],function () {
+gulp.task('build-watch',['browserify','browserSync','lessToCss'],function () {
    gulp.watch('src/**/*.+(less|coffee)',['browserify','lessToCss']);
     gulp.watch('src/**/*.html', browserSync.reload);
 });
+
+gulp.task('bw',['build-watch']);
 
 gulp.task('browserSync', function() {
     browserSync({

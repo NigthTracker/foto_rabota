@@ -1,9 +1,9 @@
 (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
 // MarionetteJS (Backbone.Marionette)
 // ----------------------------------
-// v2.4.3
+// v2.4.7
 //
-// Copyright (c)2015 Derick Bailey, Muted Solutions, LLC.
+// Copyright (c)2016 Derick Bailey, Muted Solutions, LLC.
 // Distributed under MIT license
 //
 // http://marionettejs.com
@@ -32,7 +32,7 @@
 
   var Marionette = Backbone.Marionette = {};
 
-  Marionette.VERSION = '2.4.3';
+  Marionette.VERSION = '2.4.7';
 
   Marionette.noConflict = function() {
     root.Marionette = previousMarionette;
@@ -125,7 +125,7 @@
   // utility method for parsing @ui. syntax strings
   // into associated selector
   Marionette.normalizeUIString = function(uiString, ui) {
-    return uiString.replace(/@ui\.[a-zA-Z_$0-9]*/g, function(r) {
+    return uiString.replace(/@ui\.[a-zA-Z-_$0-9]*/g, function(r) {
       return ui[r.slice(4)];
     });
   };
@@ -197,7 +197,11 @@
     }
   };
   
-  deprecate._warn = typeof console !== 'undefined' && (console.warn || console.log) || function() {};
+  deprecate._console = typeof console !== 'undefined' ? console : {};
+  deprecate._warn = function() {
+    var warn = deprecate._console.warn || deprecate._console.log || function() {};
+    return warn.apply(deprecate._console, arguments);
+  };
   deprecate._cache = {};
   
   /* jshint maxstatements: 14, maxcomplexity: 7 */
@@ -567,9 +571,11 @@
     //this is a noop method intended to be overridden by classes that extend from this base
     initialize: function() {},
   
-    destroy: function() {
-      this.triggerMethod('before:destroy');
-      this.triggerMethod('destroy');
+    destroy: function(options) {
+      options = options || {};
+  
+      this.triggerMethod('before:destroy', options);
+      this.triggerMethod('destroy', options);
       this.stopListening();
   
       return this;
@@ -660,7 +666,7 @@
         this.triggerMethod('before:swapOut', this.currentView, this, options);
       }
   
-      if (this.currentView) {
+      if (this.currentView && isDifferentView) {
         delete this.currentView._parent;
       }
   
@@ -683,9 +689,12 @@
         // we can not reuse it.
         view.once('destroy', this.empty, this);
   
-        this._renderView(view);
-  
+        // make this region the view's parent,
+        // It's important that this parent binding happens before rendering
+        // so that any events the child may trigger during render can also be
+        // triggered on the child's ancestor views
         view._parent = this;
+        this._renderView(view);
   
         if (isChangingView) {
           this.triggerMethod('before:swap', view, this, options);
@@ -817,7 +826,7 @@
       var preventDestroy  = !!emptyOptions.preventDestroy;
       // If there is no view in the region
       // we should not remove anything
-      if (!view) { return; }
+      if (!view) { return this; }
   
       view.off('destroy', this.empty, this);
       this.triggerMethod('before:empty', view);
@@ -1511,6 +1520,10 @@
   
       // call the parent view's childEvents handler
       var childEvents = Marionette.getOption(layoutView, 'childEvents');
+  
+      // since childEvents can be an object or a function use Marionette._getValue
+      // to handle the abstaction for us.
+      childEvents = Marionette._getValue(childEvents, layoutView);
       var normalizedChildEvents = layoutView.normalizeMethods(childEvents);
   
       if (normalizedChildEvents && _.isFunction(normalizedChildEvents[eventName])) {
@@ -1536,26 +1549,17 @@
       }, children);
     },
   
-    // Internal utility for building an ancestor
-    // view tree list.
-    _getAncestors: function() {
-      var ancestors = [];
+    // Walk the _parent tree until we find a layout view (if one exists).
+    // Returns the parent layout view hierarchically closest to this view.
+    _parentLayoutView: function() {
       var parent  = this._parent;
   
       while (parent) {
-        ancestors.push(parent);
+        if (parent instanceof Marionette.LayoutView) {
+          return parent;
+        }
         parent = parent._parent;
       }
-  
-      return ancestors;
-    },
-  
-    // Returns the containing parent view.
-    _parentLayoutView: function() {
-      var ancestors = this._getAncestors();
-      return _.find(ancestors, function(parent) {
-        return parent instanceof Marionette.LayoutView;
-      });
     },
   
     // Imports the "normalizeMethods" to transform hashes of
@@ -1854,27 +1858,41 @@
     reorder: function() {
       var children = this.children;
       var models = this._filteredSortedModels();
-      var modelsChanged = _.find(models, function(model) {
+  
+      if (!models.length && this._showingEmptyView) { return this; }
+  
+      var anyModelsAdded = _.some(models, function(model) {
         return !children.findByModel(model);
       });
   
-      // If the models we're displaying have changed due to filtering
-      // We need to add and/or remove child views
+      // If there are any new models added due to filtering
+      // We need to add child views
       // So render as normal
-      if (modelsChanged) {
+      if (anyModelsAdded) {
         this.render();
       } else {
         // get the DOM nodes in the same order as the models
-        var els = _.map(models, function(model, index) {
+        var elsToReorder = _.map(models, function(model, index) {
           var view = children.findByModel(model);
           view._index = index;
           return view.el;
         });
   
+        // find the views that were children before but arent in this new ordering
+        var filteredOutViews = children.filter(function(view) {
+          return !_.contains(elsToReorder, view.el);
+        });
+  
+        this.triggerMethod('before:reorder');
+  
         // since append moves elements that are already in the DOM,
         // appending the elements will effectively reorder them
-        this.triggerMethod('before:reorder');
-        this._appendReorderedChildren(els);
+        this._appendReorderedChildren(elsToReorder);
+  
+        // remove any views that have been filtered out
+        _.each(filteredOutViews, this.removeChildView, this);
+        this.checkEmpty();
+  
         this.triggerMethod('reorder');
       }
     },
@@ -2641,8 +2659,9 @@
       return Marionette.ItemView.prototype.destroy.apply(this, arguments);
     },
   
-    showChildView: function(regionName, view) {
-      return this.getRegion(regionName).show(view);
+    showChildView: function(regionName, view, options) {
+      var region = this.getRegion(regionName);
+      return region.show.apply(region, _.rest(arguments));
     },
   
     getChildView: function(regionName) {
@@ -2869,7 +2888,7 @@
   
             var eventKey  = eventName + selector;
             var handler   = _.isFunction(behaviour) ? behaviour : b[behaviour];
-  
+            if (!handler) { return; }
             _events[eventKey] = _.bind(handler, b);
           }, this);
   
@@ -20111,36 +20130,15 @@ return jQuery;
 }.call(this));
 
 },{}],21:[function(require,module,exports){
-var AppRouter,
+var AppController, AppRouter, Application, MainLayout,
   extend = function(child, parent) { for (var key in parent) { if (hasProp.call(parent, key)) child[key] = parent[key]; } function ctor() { this.constructor = child; } ctor.prototype = parent.prototype; child.prototype = new ctor(); child.__super__ = parent.prototype; return child; },
   hasProp = {}.hasOwnProperty;
 
-window.Marionette = require('backbone.marionette');
+AppRouter = require('./routers/appRouter');
 
-AppRouter = (function(superClass) {
-  extend(AppRouter, superClass);
+AppController = require('./controller/appController');
 
-  function AppRouter() {
-    return AppRouter.__super__.constructor.apply(this, arguments);
-  }
-
-  AppRouter.prototype.appRoutes = {
-    "": "main"
-  };
-
-  return AppRouter;
-
-})(Marionette.AppRouter);
-
-module.exports = AppRouter;
-
-
-},{"backbone.marionette":1}],22:[function(require,module,exports){
-var AppRouter, Application,
-  extend = function(child, parent) { for (var key in parent) { if (hasProp.call(parent, key)) child[key] = parent[key]; } function ctor() { this.constructor = child; } ctor.prototype = parent.prototype; child.prototype = new ctor(); child.__super__ = parent.prototype; return child; },
-  hasProp = {}.hasOwnProperty;
-
-AppRouter = require('./app-router');
+MainLayout = require('./layout/main/main');
 
 Application = (function(superClass) {
   extend(Application, superClass);
@@ -20150,14 +20148,20 @@ Application = (function(superClass) {
   }
 
   Application.prototype.initialize = function(options) {
-    return this.main();
+    this.on('before:start', this.startHistory);
+    this.layout = new MainLayout();
+    this.layout.render();
+    this.appController = new AppController({
+      mainRegion: this.layout.content,
+      headerRegion: this.layout.header
+    });
+    this.router = new AppRouter({
+      controller: this.appController
+    });
+    return this.start();
   };
 
-  Application.prototype.main = function() {
-    return this.startHistory();
-  };
-
-  Application.prototype.startHistory = function(options) {
+  Application.prototype.startHistory = function() {
     return Backbone.history.start();
   };
 
@@ -20168,101 +20172,32 @@ Application = (function(superClass) {
 module.exports = Application;
 
 
-},{"./app-router":21}],23:[function(require,module,exports){
-var Layout, template,
+},{"./controller/appController":22,"./layout/main/main":25,"./routers/appRouter":27}],22:[function(require,module,exports){
+var AppController, HeaderView, MainView,
   extend = function(child, parent) { for (var key in parent) { if (hasProp.call(parent, key)) child[key] = parent[key]; } function ctor() { this.constructor = child; } ctor.prototype = parent.prototype; child.prototype = new ctor(); child.__super__ = parent.prototype; return child; },
   hasProp = {}.hasOwnProperty;
 
-template = require('./layout.hbs');
+HeaderView = require('../layout/header/headerView');
 
-window._ = require('underscore');
-
-Layout = (function(superClass) {
-  extend(Layout, superClass);
-
-  function Layout() {
-    return Layout.__super__.constructor.apply(this, arguments);
-  }
-
-  Layout.prototype.el = 'body';
-
-  Layout.prototype.tagName = 'div';
-
-  Layout.prototype.className = 'wrapper';
-
-  Layout.prototype.template = _.template(template);
-
-  Layout.prototype.regions = {
-    header: '.header',
-    content: '.main'
-  };
-
-  Layout.prototype.ui = {
-    mainAppContainer: ".main-app-container"
-  };
-
-  Layout.prototype.initialize = function(options) {
-    return console.log('Лайоут');
-  };
-
-  return Layout;
-
-})(Marionette.LayoutView);
-
-module.exports = Layout;
-
-
-},{"./layout.hbs":24,"underscore":20}],24:[function(require,module,exports){
-module.exports = "<div class=\"main-app-container\">\n    asdasdas\n<div class=\"header\"></div>\n<div class=\"main\"></div>\n</div>";
-
-},{}],25:[function(require,module,exports){
-var ModuleClass;
-
-ModuleClass = require('./module');
-
-module.exports = {
-  checkRoles: function(roles) {
-    return true;
-  },
-  urlPrefix: 'first',
-  label: 'first',
-  moduleClass: ModuleClass
-};
-
-
-},{"./module":27}],26:[function(require,module,exports){
-var AppController, MainLayout,
-  bind = function(fn, me){ return function(){ return fn.apply(me, arguments); }; },
-  extend = function(child, parent) { for (var key in parent) { if (hasProp.call(parent, key)) child[key] = parent[key]; } function ctor() { this.constructor = child; } ctor.prototype = parent.prototype; child.prototype = new ctor(); child.__super__ = parent.prototype; return child; },
-  hasProp = {}.hasOwnProperty;
-
-MainLayout = require("../../../../first-application/layout/layout");
+MainView = require('../view/main/main');
 
 AppController = (function(superClass) {
   extend(AppController, superClass);
 
   function AppController() {
-    this.initialize = bind(this.initialize, this);
     return AppController.__super__.constructor.apply(this, arguments);
   }
 
   AppController.prototype.initialize = function(options) {
-    return this.mainRegion = options.mainRegion;
+    this.mainRegion = options.mainRegion;
+    return this.mainHeader = options.headerRegion;
   };
 
   AppController.prototype.main = function() {
-    return console.log('Hello it is first!!!');
-  };
-
-  AppController.prototype.firstEnter = function() {
-    return this.init();
-  };
-
-  AppController.prototype.init = function() {
-    this.mainLayout = new MainLayout({
-      right: false
-    });
-    return this.mainRegion.show(this.mainLayout);
+    HeaderView = new HeaderView();
+    MainView = new MainView();
+    this.mainHeader.show(HeaderView);
+    return this.mainRegion.show(MainView);
   };
 
   return AppController;
@@ -20272,100 +20207,154 @@ AppController = (function(superClass) {
 module.exports = AppController;
 
 
-},{"../../../../first-application/layout/layout":23}],27:[function(require,module,exports){
-var AppController, FirstModule, ModuleRouter,
-  bind = function(fn, me){ return function(){ return fn.apply(me, arguments); }; },
+},{"../layout/header/headerView":23,"../view/main/main":28}],23:[function(require,module,exports){
+var HeaderView, template,
   extend = function(child, parent) { for (var key in parent) { if (hasProp.call(parent, key)) child[key] = parent[key]; } function ctor() { this.constructor = child; } ctor.prototype = parent.prototype; child.prototype = new ctor(); child.__super__ = parent.prototype; return child; },
   hasProp = {}.hasOwnProperty;
 
-AppController = require('./controllers/module-controller.coffee');
+template = require('./headerViewTemplate.html');
 
-ModuleRouter = require('./routers/router');
+HeaderView = (function(superClass) {
+  extend(HeaderView, superClass);
 
-FirstModule = (function(superClass) {
-  extend(FirstModule, superClass);
-
-  function FirstModule() {
-    this.initialize = bind(this.initialize, this);
-    return FirstModule.__super__.constructor.apply(this, arguments);
+  function HeaderView() {
+    return HeaderView.__super__.constructor.apply(this, arguments);
   }
 
-  FirstModule.prototype.initialize = function(urlPrefix) {
-    this.appController = new AppController({
-      mainRegion: this.app.layout.content
-    });
-    return this.router = new ModuleRouter(urlPrefix, {
-      controller: this.appController
-    });
-  };
+  HeaderView.prototype.template = _.template(template);
 
-  return FirstModule;
+  HeaderView.prototype.className = 'header-main';
 
-})(Marionette.Module);
+  HeaderView.prototype.tagName = 'div';
 
-module.exports = FirstModule;
+  HeaderView.prototype.initialize = function() {};
+
+  HeaderView.prototype.onRender = function() {};
+
+  return HeaderView;
+
+})(Marionette.ItemView);
+
+module.exports = HeaderView;
 
 
-},{"./controllers/module-controller.coffee":26,"./routers/router":28}],28:[function(require,module,exports){
-var ModuleRouter, Router,
+},{"./headerViewTemplate.html":24}],24:[function(require,module,exports){
+module.exports = "<div class=\"header-body\">\n    <h1 id=\"logo\">Сайт малышки</h1>\n    <nav >\n        <ul class=\"ul-header-menu\">\n            <li class=\"li-header-menu\"> <a href=\"#\"><span class=\"span-li-menu-header\">Малышка</span></a></li>\n            <li class=\"li-header-menu\"> <a href=\"#\"><span class=\"span-li-menu-header\">я</span></a></li>\n            <li class=\"li-header-menu\"> <a href=\"#\"><span class=\"span-li-menu-header\">тебя</span></a></li>\n            <li class=\"li-header-menu\"> <a href=\"#\"><span class=\"span-li-menu-header\">очень</span></a></li>\n            <li class=\"li-header-menu\"> <a href=\"#\"><span class=\"span-li-menu-header\">сильно</span></a></li>\n            <li class=\"li-header-menu\"> <a href=\"#\"><span class=\"span-li-menu-header\">люблю!!!</span></a></li>\n        </ul>\n    </nav>\n</div>";
+
+},{}],25:[function(require,module,exports){
+var AppLayoutView, template,
   extend = function(child, parent) { for (var key in parent) { if (hasProp.call(parent, key)) child[key] = parent[key]; } function ctor() { this.constructor = child; } ctor.prototype = parent.prototype; child.prototype = new ctor(); child.__super__ = parent.prototype; return child; },
   hasProp = {}.hasOwnProperty;
 
-ModuleRouter = require('../../../../../application-common/app-router');
+template = require('./mainLayout.html');
 
-Router = (function(superClass) {
-  extend(Router, superClass);
+AppLayoutView = (function(superClass) {
+  extend(AppLayoutView, superClass);
 
-  function Router() {
-    return Router.__super__.constructor.apply(this, arguments);
+  function AppLayoutView() {
+    return AppLayoutView.__super__.constructor.apply(this, arguments);
   }
 
-  Router.prototype.initialize = function(option) {
-    this.controller = option.controller;
-    return this.on("before:enter", (function(_this) {
-      return function() {
-        if (_this.controller.firstEnter) {
-          return _this.controller.firstEnter();
-        }
-      };
-    })(this));
+  AppLayoutView.prototype.el = "body";
+
+  AppLayoutView.prototype.template = template;
+
+  AppLayoutView.prototype.regions = {
+    header: "#header",
+    content: "#main"
   };
 
-  Router.prototype.moduleRoutes = {
+  return AppLayoutView;
+
+})(Marionette.LayoutView);
+
+module.exports = AppLayoutView;
+
+
+},{"./mainLayout.html":26}],26:[function(require,module,exports){
+module.exports = "<div>\n    <div class=\"header\" id=\"header\"></div>\n    <div class=\"main\" id=\"main\"></div>\n</div>";
+
+},{}],27:[function(require,module,exports){
+var MainRouter,
+  extend = function(child, parent) { for (var key in parent) { if (hasProp.call(parent, key)) child[key] = parent[key]; } function ctor() { this.constructor = child; } ctor.prototype = parent.prototype; child.prototype = new ctor(); child.__super__ = parent.prototype; return child; },
+  hasProp = {}.hasOwnProperty;
+
+MainRouter = (function(superClass) {
+  extend(MainRouter, superClass);
+
+  function MainRouter() {
+    return MainRouter.__super__.constructor.apply(this, arguments);
+  }
+
+  MainRouter.prototype.initialize = function(option) {
+    return this.controller = option.controller;
+  };
+
+  MainRouter.prototype.appRoutes = {
     "": "main"
   };
 
-  return Router;
+  MainRouter.prototype.execute = function(callback, args) {
+    return MainRouter.__super__.execute.call(this, callback, args);
+  };
 
-})(ModuleRouter);
+  return MainRouter;
 
-module.exports = Router;
+})(Marionette.AppRouter);
+
+module.exports = MainRouter;
 
 
-},{"../../../../../application-common/app-router":21}],29:[function(require,module,exports){
-var Application;
+},{}],28:[function(require,module,exports){
+var MainView, template,
+  extend = function(child, parent) { for (var key in parent) { if (hasProp.call(parent, key)) child[key] = parent[key]; } function ctor() { this.constructor = child; } ctor.prototype = parent.prototype; child.prototype = new ctor(); child.__super__ = parent.prototype; return child; },
+  hasProp = {}.hasOwnProperty;
 
+template = require('./mainTemplate.html');
+
+MainView = (function(superClass) {
+  extend(MainView, superClass);
+
+  function MainView() {
+    return MainView.__super__.constructor.apply(this, arguments);
+  }
+
+  MainView.prototype.template = _.template(template);
+
+  MainView.prototype.className = 'main-view';
+
+  MainView.prototype.tagName = 'div';
+
+  MainView.prototype.initialize = function() {};
+
+  MainView.prototype.onRender = function() {};
+
+  return MainView;
+
+})(Marionette.ItemView);
+
+module.exports = MainView;
+
+
+},{"./mainTemplate.html":29}],29:[function(require,module,exports){
+module.exports = "<h1>Сайт специально разработан для моей любимой девочки</h1>\n    <h3>И я беспонятия что делать дальше:D</h3>\n        <h4>Требуется твоя помощь!!!</h4>\n            <h5>Help me!!!!</h5>";
+
+},{}],30:[function(require,module,exports){
 window.$ = window.jQuery = require('jquery');
 
-Application = require('./application-common/application');
-
 $(function() {
-  var First, app, bootstrap, submodules;
+  var Application, bootstrap;
   window._ = require('underscore');
   window.Backbone = require('backbone');
   window.Backbone.Radio = require('backbone.radio');
   window.Marionette = require('backbone.marionette');
   bootstrap = require('bootstrap');
-  First = require('./coffee/modules/first/first/config');
-  submodules = [First];
-  return app = new Application({
-    submodules: submodules,
-    need_tab_layout: true
-  });
+  Application = require('./coffee/aplication');
+  return new Application();
 });
 
 
-},{"./application-common/application":22,"./coffee/modules/first/first/config":25,"backbone":5,"backbone.marionette":1,"backbone.radio":4,"bootstrap":6,"jquery":19,"underscore":20}]},{},[29])
+},{"./coffee/aplication":21,"backbone":5,"backbone.marionette":1,"backbone.radio":4,"bootstrap":6,"jquery":19,"underscore":20}]},{},[30])
 
 
 //# sourceMappingURL=main.js.map

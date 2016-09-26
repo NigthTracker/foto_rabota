@@ -1,12 +1,11 @@
 class MainRouter extends Marionette.AppRouter
-  initialize: (option) ->
-    @controller = option.controller
+    initialize: (option) ->
+        @controller = option.controller
 
-  appRoutes: {
-    "": "main"
-  }
-  execute: (callback,args) ->
-    @controller.spinnerShow()
-    super(callback, args)
+    appRoutes: {
+        "": "main"
+    }
+    execute: (callback, args) ->
+        super(callback, args)
 
-module.exports=MainRouter
+module.exports = MainRouter

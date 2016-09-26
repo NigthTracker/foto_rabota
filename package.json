@@ -3,8 +3,8 @@
   "version": "0.0.1",
   "main": "./src/initialize.coffee",
   "dependencies": {
-    "backbone": "1.3.3",
-    "backbone.marionette": "3.0",
+    "backbone": "1.2.3",
+    "backbone.marionette": "2.4.7",
     "backbone.radio": "1.0.2",
     "bootstrap": "^3.3.5",
     "install": "^0.2.3",
